@@ -1,0 +1,10 @@
+scrambledegg: 7910
+milk: 2524
+sandwich: 3554
+pancake: 9741
+tea: 1661
+friedegg: 8343
+salat: 5693
+coffee: 1208
+juice: 2947
+cereals: 1424
