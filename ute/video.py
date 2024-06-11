@@ -2,8 +2,8 @@
 
 """Module with class for single video"""
 
-__author__ = 'Anna Kukleva'
-__date__ = 'August 2018'
+__author__ = 'Anna Kukleva (base code), Adriana Díaz Soley (modifications)'
+__date__ = 'August 2018, modified in May 2024'
 
 from collections import Counter
 import numpy as np
@@ -15,6 +15,11 @@ from ute.utils.util_functions import dir_check
 from ute.viterbi_utils.viterbi import Viterbi
 from ute.viterbi_utils.grammar import Grammar
 import itertools
+
+import torch
+import torch.nn.functional as F
+
+
 
 class Video(object):
     """Single video with respective for the algorithm parameters"""
@@ -215,6 +220,12 @@ class Video(object):
                 self._valid_likelihood[:, subact] = False
                 self._valid_likelihood[:, subact] = scores > trh
 
+        # Debugging statements
+        """logger.debug(f"Video {self.name}: Likelihood Grid after update for subact {subact}")
+        logger.debug(f"  Likelihood Grid Shape: {self._likelihood_grid.shape}")
+        logger.debug(f"  Likelihood Grid Range: Min {self._likelihood_grid.min()}, Max {self._likelihood_grid.max()}")
+        logger.debug(f"  Likelihood Grid Type: {self._likelihood_grid.dtype}")"""
+
     def valid_likelihood_update(self, trhs):
         for trh_idx, trh in enumerate(trhs):
             self._valid_likelihood[:, trh_idx] = False
@@ -261,21 +272,31 @@ class Video(object):
 
     # @timing
     def viterbi(self, pi=None):
-
         if pi is None:
             pi = self._pi
         log_probs = self._likelihood_grid
+
+        # Debugging statements
+        """logger.debug("in video class")
+        logger.debug(f"Viterbi Decoding for {self.name}:")
+        logger.debug(f"  Initial Log Probs Shape: {log_probs.shape}")
+        logger.debug(f"  Initial Log Probs Range: Min {log_probs.min()}, Max {log_probs.max()}")
+        logger.debug(f"  Initial Log Probs Type: {log_probs.dtype}")"""
+        
         if np.max(log_probs) > 0:
             self._likelihood_grid = log_probs - (2 * np.max(log_probs))
+        
+        #logger.debug(f"  Normalized Likelihood Grid Range: Min {self._likelihood_grid.min()}, Max {self._likelihood_grid.max()}")
+        
         alignment, return_score = self._viterbi_inner(pi, save=True)
         self._z = np.asarray(alignment).copy()
 
         self._subact_count_update()
 
         name = str(self.name) + '_' + self.opt.log_str + 'iter%d' % self.iter + '.txt'
-        np.savetxt(join(self.opt.output_dir, 'segmentation', name),
-                   np.asarray(self._z), fmt='%d')
+        np.savetxt(join(self.opt.output_dir, 'segmentation', name), np.asarray(self._z), fmt='%d')
         # print('path alignment:', join(self.opt.data, 'segmentation', name))
+        #print(f"Viterbi decoding for video {self.name}: unique labels {np.unique(self._z)}")
 
         return return_score
     
@@ -289,48 +310,36 @@ class Video(object):
         self._subact_count_update()
 
 
-    ########### AÑADIDO ###########
+    ########### ADDED ##########################
     def find_segments(self, labels):
-        """Find contiguous segments in a list of labels."""
+        """Finds contiguous segments in a list of labels."""
         segments = []
         for key, group in itertools.groupby(enumerate(labels), lambda ix : ix[1]):
             group = list(group)
             segments.append((key, group[0][0], group[-1][0]))  # (label, start_idx, end_idx)
         return segments
 
-    def find_segments(self, labels):
-        """Find contiguous segments in a list of labels."""
-        segments = []
-        for key, group in itertools.groupby(enumerate(labels), lambda ix: ix[1]):
-            group = list(group)
-            segments.append((key, group[0][0], group[-1][0]))  # (label, start_idx, end_idx)
-        return segments
 
-    def reorder_clusters(self, transcript):
-        """Reorder clusters based on the transcript which specifies the estimated order of actions."""
+    def reorder_clusters(self, transcript, model):
+        """Reorders clusters based on the transcript, which specifies the estimated order of actions"""
 
         # Find contiguous segments in the original self._z
         segments = self.find_segments(self._z)
-        
-        # Print the segments for debugging
         print("Original segments:", segments)
 
         # Normalize transcript labels to start from 0
         transcript = [(label - 1, start) for label, start in transcript]
         print("Normalized transcript:", transcript)
 
-        # Create a mapping from old labels to new labels based on the transcript order
-        label_mapping = {}
-        for new_label, (old_label, _) in enumerate(transcript):
-            print("old label: ", old_label)
-            label_mapping[old_label] = new_label
-            print("new_label: ", new_label)
-
-        # Reassign segment labels based on the new order
+        # Create a list to hold the new segments based on the order given in the transcript
         new_segments = []
-        for label, start, end in segments:
-            new_label = label_mapping.get(label, label)
-            new_segments.append((new_label, start, end))
+        
+        for i, (transcript_label, transcript_start) in enumerate(transcript):
+            # Find the segment in the original segments that corresponds to this transcript entry by position
+            if i < len(segments):
+                _, start, end = segments[i]
+                # Append the segment with the new label to new_segments
+                new_segments.append((transcript_label, start, end))
 
         # Sort the new segments based on their original start positions to maintain order
         new_segments.sort(key=lambda x: x[1])
@@ -347,27 +356,12 @@ class Video(object):
         unique_labels = np.unique(self._z)
         print("Unique labels after reordering:", unique_labels)
 
+        # Log changes in likelihood grid after reordering
+        #logger.debug(f"Likelihood Grid after reordering for video {self.name}: Min {self._likelihood_grid.min()}, Max {self._likelihood_grid.max()}")
 
+        return new_z
 
-    """def reorder_clusters(self, transcript):
-        #Reorder clusters based on the transcript which specifies the correct order of actions.
-        # Este con GT da bien
-        #print("Original transcript for reordering: ", transcript)
-        new_z = np.full(self.n_frames, -1, dtype=int)
-        
-        for i in range(len(transcript)):
-            action_label, start_frame = transcript[i]
-            end_frame = transcript[i + 1][1] if i + 1 < len(transcript) else self.n_frames
-            # Ensure the end frame is within bounds
-            end_frame = min(end_frame, self.n_frames)
-
-            # Ensure the start frame is not greater than the end frame
-            if start_frame >= self.n_frames:
-                break
-            print(f"Assigning label {action_label} from frame {start_frame} to {end_frame}")
-            new_z[start_frame:end_frame] = action_label
-        
-        self._z = new_z
-        #print(f"New _z after reordering: {self._z}")"""
-    
-    
+    def update_cluster_labels(self, new_labels):
+        """Update the cluster labels with the new labels."""
+        self._z = new_labels
+        self._subact_count_update()

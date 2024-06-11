@@ -3,8 +3,8 @@
 """Module with Corpus class. There are methods for each step of the alg for the
 whole video collection of one complex activity. See pipeline."""
 
-__author__ = 'Anna Kukleva'
-__date__ = 'August 2018'
+__author__ = 'Anna Kukleva (base code), Adriana Díaz Soley (modifications)'
+__date__ = 'August 2018, modified in May 2024'
 
 import numpy as np
 import os
@@ -27,17 +27,18 @@ from ute.utils.visualization import Visual, plot_segm
 from ute.probabilistic_utils.gmm_utils import AuxiliaryGMM, GMM_trh
 from ute.eval_utils.f1_score import F1Score
 from ute.models.dataset_loader import load_reltime
-########### AÑADIDO ##########
-from ute.models.dataset_loader_video_idx import load_reltime_video_idx
-##############################
 from ute.models.training_embed import load_model, training
 import pickle
 
+########### ADDED #####################
+from ute.models.dataset_loader_video_idx import load_reltime_video_idx
 import json
-####################### AÑADIDO - TRANSFORMER ENCODER ##############
+
 from ute.models import transformer
 import torch.nn.functional as F
-####################################################################
+
+from ute.models.training_embed_permutation_aware import training_permutation_aware
+#######################################
 
 class Corpus(object):
     def __init__(self, opt, subaction='coffee', K=None):
@@ -82,7 +83,7 @@ class Corpus(object):
         dir_check(os.path.join(opt.output_dir, 'likelihood'))
         self.vis = None  # visualization tool
 
-        ######### AÑADIDO #############
+        ######### ADDED #############
         self.transcripts = None
         if opt.apply_permutation_aware_prior:
             self.transcripts = self.load_initial_transcripts(opt.transcripts_path)
@@ -229,6 +230,14 @@ class Corpus(object):
             for batch_features, batch_gtreltime in unshuffled_dataloader:
                 if self._embedded_feat is None:
                     self._embedded_feat = batch_features
+                    print("After First Phase Training - Embedding Shape:", self._embedded_feat.shape)
+                    if isinstance(self._embedded_feat, torch.Tensor):
+                        print("After First Phase Training - Embedding Mean:", self._embedded_feat.mean().item())
+                        logger.debug(f"After First Phase Training - Embedding Mean:: {self._embedded_feat.mean().item()}")
+                    else:
+                        print("After First Phase Training - Embedding Mean:", np.mean(self._embedded_feat))
+
+
                 else:
                     self._embedded_feat = torch.cat((self._embedded_feat, batch_features), 0)
 
@@ -250,16 +259,127 @@ class Corpus(object):
 
         return model
 
+    ###################### ADDED ##############################
+    def reset_for_second_training(self):
+        # Reset all attributes except transcripts
+        self._embedded_feat = None
+        self._total_fg_mask = None
+        self._features = None
+        self._videos = []
+        self._gaussians = {}
+        self._subact_counter = np.ones(self._K)
+        self.iter = 0
+
+    def second_regression_training(self):
+        """ Train a new model that uses the estimated transcripts from the previous regression training to 
+        extract more accurate temporal embeddings that allow permutations between actions (for tha case of
+        basic transcript) or/and repetition of actions (for the improved transcript)"""
+
+        # Reset everything
+        self.reset_for_second_training()
+
+        self._init_videos()
+        self._update_fg_mask()
+
+        logger.debug('.')
+
+        # Load estimated transcripts
+        transcripts = self.transcripts
+        logger.debug('load transcripts')
+        logger.debug('transcripts:', transcripts)
+
+        print("Learning Prototype: {}".format(self.opt.learn_prototype))
+
+        dataloader = load_reltime_video_idx(videos=self._videos,
+                                  features=self._features, opt = self.opt)
+        
+        if self.opt.use_transformer == False:
+            print("creating mlp model...")
+            model, loss, tcn_loss, optimizer = mlp.create_model(num_clusters = self._K, opt = self.opt ,  learn_prototype = self.opt.learn_prototype)
+        
+        else:
+            print("creating transformer model...")
+            model, loss, tcn_loss, optimizer = transformer.create_model(self.opt, self._K, self.opt.learn_prototype)
+
+        
+        if self.opt.load_model:
+            model.load_state_dict(load_model(self.opt))
+            self._embedding = model
+        
+        else:
+            self._embedding = training_permutation_aware(dataloader, self.opt.epochs,
+                                                         save=self.opt.save_model,
+                                                         model=model,
+                                                         loss=loss,
+                                                         tcn_loss = tcn_loss,
+                                                         learn_prototype = self.opt.learn_prototype,
+                                                         optimizer=optimizer,
+                                                         name=self.opt.model_name, opt = self.opt,
+                                                         corpus=self,  # Pass the current Corpus instance
+                                                         transcripts=transcripts)
+
+        self._embedding = self._embedding.cpu()
+
+        unshuffled_dataloader = load_reltime(videos=self._videos,
+                                             features=self._features, 
+                                             mode = "test", opt = self.opt,
+                                             shuffle=False)
+
+
+        gt_relative_time = None
+        relative_time = None
+        if self.opt.model_name == 'mlp':
+            for batch_features, batch_gtreltime in unshuffled_dataloader:
+                if self._embedded_feat is None:
+                    self._embedded_feat = batch_features
+                    print("After Second Phase Training - Embedding Shape:", self._embedded_feat.shape)
+                    if isinstance(self._embedded_feat, torch.Tensor):
+                        print("After Second Phase Training - Embedding Mean:", self._embedded_feat.mean().item())
+                        logger.debug(f"After Second Phase Training - Embedding Mean:: {self._embedded_feat.mean().item()}")
+
+                    else:
+                        print("After Second Phase Training - Embedding Mean:", np.mean(self._embedded_feat))
+
+
+                else:
+                    self._embedded_feat = torch.cat((self._embedded_feat, batch_features), 0)
+
+                batch_gtreltime = batch_gtreltime.numpy().reshape((-1, 1))
+                gt_relative_time = join_data(gt_relative_time, batch_gtreltime, np.vstack)
+            
+
+            self._embedded_feat = self._embedding.embedded(self._embedded_feat.float()).detach().numpy()
+            self._embedded_feat = np.squeeze(self._embedded_feat)
+
+        return model
+
+
+    #############################################################################
+
     def get_proto_likelihood(self, features, prototypes):
         scores =  np.matmul(features, np.transpose(prototypes))
+        #logger.debug(f"Scores Shape: {scores.shape}")
+        #logger.debug(f"Scores Range: Min {scores.min()}, Max {scores.max()}")
+
+        # Scale scores to avoid numerical instability
+        scores = scores - np.max(scores, axis=1, keepdims=True)
+
         probs = softmax(scores/0.1)
         probs = np.clip(probs, 1e-30, 1)
+
+        #logger.debug(f"Probabilities Shape: {probs.shape}")
+        #logger.debug(f"Probabilities Range: Min {probs.min()}, Max {probs.max()}")
 
         #print(probs[0])
         return np.log(probs)
     
     def generate_prototype_likelihood(self, model):
         prototypes = model.get_prototypes().cpu().numpy()
+
+        # Debugging prototypes
+        #logger.debug(f"Prototypes Shape: {prototypes.shape}")
+        #logger.debug(f"Prototypes: {prototypes}")
+
         for video_idx in range(len(self._videos)):
             self._video_likelihood_grid_proto(video_idx, prototypes)
 
@@ -275,10 +395,11 @@ class Corpus(object):
             
             for video in self._videos:
                 video.valid_likelihood_update(trh_set)
-            
-
-
-
+    
+        # Log likelihood grid after generation
+        #logger.debug('Likelihood grid after generating prototype likelihoods:')
+        #for video in self._videos:
+        #    logger.debug(f"Video {video.name}: Likelihood Grid Range: Min {video._likelihood_grid.min()}, Max {video._likelihood_grid.max()}")  
     
     def _video_likelihood_grid_proto(self, video_idx, prototypes):
         video = self._videos[video_idx]
@@ -286,9 +407,21 @@ class Corpus(object):
             features = self._features[video.global_range]
         else:
             features = self._embedded_feat[video.global_range]
+        
+        # Debugging features
+        #logger.debug(f"Video {video.name}: Features Shape: {features.shape}")
+        #logger.debug(f"Video {video.name}: Features Range: Min {features.min()}, Max {features.max()}")
+    
         score_matrix = self.get_proto_likelihood(features, prototypes)
+
+        # Debugging score matrix
+        #logger.debug(f"Video {video.name}: Score Matrix Shape: {score_matrix.shape}")
+        #logger.debug(f"Video {video.name}: Score Matrix Range: Min {score_matrix.min()}, Max {score_matrix.max()}")
+
         for subact in range(self._K):
             scores = score_matrix[:, subact]
+            # Debugging scores for each subact
+            #logger.debug(f"Video {video.name}: Subact {subact}: Scores Range: Min {scores.min()}, Max {scores.max()}")      
 
             video.likelihood_update(subact, scores)
             
@@ -555,22 +688,35 @@ class Corpus(object):
         for video in self._videos:
             video.segmentation['cl'] = (video._z, self._label2gt)
 
-    ########### AÑADIDO ####################
+    ########### ADDED ################################
     def load_initial_transcripts(self, path):
+        """Load the initial transcripts given their corresponding path"""
+        
         print(f"Loading initial transcripts from {path}")
         with open(path, 'r') as file:
             transcripts = json.load(file)
         return transcripts
 
+
     def update_transcripts(self, new_transcripts):
+        """ Update the transcripts of the class"""
+        
         print("Updating transcripts...")
         self.transcripts = new_transcripts
         print("Transcripts updated")
 
 
-    def apply_transcript_reordering(self):
-        """Apply transcript data to reorder clusters for each video."""
+    def apply_transcript_reordering(self, model):
+        """Apply transcript data to reorder clusters for each video. It relabels the segments based
+        on the order of actions estimated by the transcript"""
+        
+        logger.debug("Applying transcript reordering")
         print("Applying transcript reordering")
+        
+        if self.opt.recluster_after_reordering:
+            embeddings = []
+            initial_labels = []
+        
         for video_name, transcript in self.transcripts.items():
             print(video_name, transcript)
             
@@ -578,10 +724,120 @@ class Corpus(object):
             if video is None:
                 print(f"Video {video_name} not found")
                 continue
-        
-            video.reorder_clusters(transcript)
+            
+            # Relabel the segments based on the order of actions defined by the estimated transcript
+            ordered_labels = video.reorder_clusters(transcript, model)
             print(f"Updated _z for {video_name}") 
-    #####################################
+
+            # Update the video labels
+            video.update_cluster_labels(ordered_labels)
+            
+            # Save all updated embeddings and initial labels from each video
+            if self.opt.recluster_after_reordering:
+                embeddings.append(video.features())
+                initial_labels.append(ordered_labels)
+        
+        
+        if self.opt.recluster_after_reordering:
+            # Concatenate all updated embeddings and initial labels from each video
+            embeddings = np.concatenate(embeddings, axis=0)
+            initial_labels = np.concatenate(initial_labels, axis=0)
+            print(f"Initial labels after reordering: {np.unique(initial_labels)}")
+
+            # Perform clustering again with the embeddings and initial labels
+            self.recompute_centroids_and_reassign(embeddings, initial_labels, model)
+            print("Reclustering with updated centroids done.")
+
+    
+    def recompute_centroids_and_reassign(self, embeddings, initial_labels, model):
+        """Recompute centroids based on the initial classification and reassign embeddings to the closest prototype."""
+        logger.debug("Recomputing centroids and reassigning embeddings")
+
+        # Convert embeddings to tensor and get device
+        device = next(model.parameters()).device
+        embeddings_tensor = torch.tensor(embeddings, dtype=torch.float32).to(device)
+        
+        # Transform embeddings to the embedding space
+        embeddings_transformed = model.embedded(embeddings_tensor).detach().cpu().numpy()
+
+        # Initialize centroids
+        centroids = []
+        for label in range(self._K):
+            centroid = embeddings_transformed[initial_labels == label].mean(axis=0)
+            centroids.append(centroid)
+        
+        # Stack centroids to form prototype tensor
+        centroids = torch.tensor(centroids, dtype=torch.float32).to(device)
+
+        # Check if dimensions match
+        if centroids.shape[1] != model.prototype_layer.weight.shape[1]:
+            logger.debug(f"Centroids shape: {centroids.shape}")
+            logger.debug(f"Model prototype layer weight shape: {model.prototype_layer.weight.shape}")
+            raise ValueError(f"Dimension mismatch: Centroids have {centroids.shape[1]} features, but model prototypes have {model.prototype_layer.weight.shape[1]} features.")
+
+
+        model.update_prototypes(centroids.cpu().numpy())
+        
+        # Reassign each embedding to the closest prototype
+        embeddings_transformed_tensor = torch.tensor(embeddings_transformed, dtype=torch.float32).to(device)
+        distances = torch.cdist(embeddings_transformed_tensor, centroids)
+        assigned_labels = torch.argmin(distances, dim=1).cpu().numpy()
+        
+        # Update labels for each video
+        start_idx = 0
+        for video in self._videos:
+            end_idx = start_idx + video.n_frames
+            video.update_cluster_labels(assigned_labels[start_idx:end_idx])
+            start_idx = end_idx
+
+        logger.debug("Reassignment complete")
+
+
+    def recompute_centroids_and_cluster(self, embeddings, initial_labels, model):
+        """Recompute centroids based on the initial classification and perform 
+        clustering with the given embeddings."""
+        
+        logger.debug("Recomputing centroids and performing new clustering")
+
+        device = next(model.parameters()).device
+
+        # Transform embeddings to the embedding space
+        embeddings = torch.tensor(embeddings, dtype=torch.float32).to(device)
+        embeddings = model.embedded(embeddings).detach().cpu().numpy()
+
+        # Initialize the k-means algorithm
+        kmean = MiniBatchKMeans(n_clusters=self._K, random_state=self.opt.seed, batch_size=50, max_iter=1)
+        
+        # Use the initial labels as a starting point for clustering
+        unique_labels = np.unique(initial_labels)
+        
+        # For each unique label, calculate the mean of the embeddings that belong to that label.
+        initial_centroids = np.array([embeddings[initial_labels == label].mean(axis=0) for label in unique_labels])
+        logger.debug(f"Initial centroids shape: {initial_centroids.shape}")
+        logger.debug(f"Initial Centroids: {initial_centroids}")
+
+        # Perform KMeans clustering with initial centroids
+        kmean.cluster_centers_ = initial_centroids
+        kmean.fit(embeddings)
+        
+        # Get the cluster labels
+        cluster_labels = np.asarray(kmean.labels_).copy()
+        logger.debug(f"KMeans labels: {np.unique(cluster_labels)}")
+
+        # Update the labels for each video
+        start_idx = 0
+        for video in self._videos:
+            end_idx = start_idx + video.n_frames
+            video.update_cluster_labels(cluster_labels[start_idx:end_idx])
+            start_idx = end_idx
+
+        # Update the model prototypes (centroids) based on the new clustering
+        model.update_prototypes(kmean.cluster_centers_)
+        
+        updated_prototypes = model.get_prototypes()
+        logger.debug(f"Updated prototypes: {updated_prototypes}")
+
+    ##############################################################
 
     def _count_subact(self):
         self._subact_counter = np.zeros(self._K)
@@ -600,6 +856,15 @@ class Corpus(object):
                 logger.debug(str(self._subact_counter))
             if self.opt.bg:
                 video.update_fg_mask()
+
+            # Debugging statements
+            #logger.debug(f"Video {video.name}:")
+            #logger.debug(f"  Likelihood Grid Shape: {video._likelihood_grid.shape}")
+            #logger.debug(f"  Likelihood Grid Range: Min {video._likelihood_grid.min()}, Max {video._likelihood_grid.max()}")
+            #logger.debug(f"  Likelihood Grid Type: {video._likelihood_grid.dtype}")
+            #logger.debug(f"  Pi: {video._pi}")
+            #print(f"  Foreground Mask: {video.fg_mask}")
+
             video.viterbi()
             cur_order = list(video._pi)
             if cur_order not in pr_orders:
@@ -652,16 +917,6 @@ class Corpus(object):
         acc_cur = accuracy.mof_val()
         logger.debug('%sAction: %s' % (prefix, self._subaction))
         logger.debug('%sMoF val: ' % prefix + str(acc_cur))
-        
-        ############# AÑADIDO ############
-        from os.path import join
-        tensorboard_dir = '/home/usuaris/imatge/adriana.diaz/TOT-CVPR22-main/runs'
-        accuracy_metrics_path = join(tensorboard_dir, 'Accuracy_Metrics.txt')
-        print("saving accuracy")
-        with open(accuracy_metrics_path, 'a') as accuracy_file:
-            accuracy_file.write(f'{prefix} Epoch: Current Accuracy: {acc_cur:.4f}\n')
-
-        ##################################
 
         logger.debug('%sprevious dic -> MoF val: ' % prefix + str(float(old_mof) / total_fr))
 
@@ -749,4 +1004,4 @@ class Corpus(object):
         for video in self._videos:
             video_features = self._embedded_feat[video.global_range]
             feat_name = self.opt.resume_str + '_%s' % video.name
-            np.savetxt(ops.join(self.opt.data, 'embed', opt.subaction, feat_name), video_features)
+            np.savetxt(ops.join(self.opt.data, 'embed', self.opt.subaction, feat_name), video_features)

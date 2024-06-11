@@ -225,6 +225,13 @@ class MLP(nn.Module):
                 nn.init.normal_(m.weight, 0, 0.01)
                 if type(m.bias) != type(None):
                   nn.init.constant_(m.bias, 0)
+    
+    ########### ADDED ##############
+    def update_prototypes(self, new_prototypes):
+      with torch.no_grad():
+        self.prototype_layer.weight.copy_(torch.tensor(new_prototypes).to(self.prototype_layer.weight.device))
+     
+    ################################
 
 
 def create_model(opt, num_clusters, learn_prototype = True):

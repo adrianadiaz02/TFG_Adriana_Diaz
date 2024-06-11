@@ -2,8 +2,8 @@
 Unsupervised learning and segmentation of complex activities from video.
 """
 
-__author__ = 'Anna Kukleva'
-__date__ = 'June 2019'
+__author__ = 'Anna Kukleva (base code), Adriana Díaz Soley (modifications)'
+__date__ = 'June 2019, modified in May 2024'
 
 from ute.corpus import Corpus
 from ute.utils.logging_setup import logger
@@ -17,14 +17,22 @@ def temp_embed(opt):
 
     logger.debug('Corpus with poses created')
     print(opt.model_name)
+    
     if opt.model_name in ['mlp']:
-        # trains or loads a new model and uses it to extracxt temporal embeddings for each video
+        # train or load a new model and use it to extract temporal embeddings for each video
         model = corpus.regression_training()
     
     if opt.model_name == 'nothing':
         print("HEREE in Nothing")
         corpus.without_temp_emed()
 
+    # train a new model that uses the estimated transcripts from the previous regression training to 
+    # extract more accurate temporal embeddings (that allow permutation or repetition of actions)
+    #if opt.apply_permutation_aware_prior:
+    if opt.do_2nd_train:
+        model = corpus.second_regression_training()
+
+    # Cluster the embeddings
     if not opt.learn_prototype: 
         print("HEREEEE")
         corpus.clustering()
@@ -37,6 +45,7 @@ def temp_embed(opt):
     else:
         #corpus.gaussian_model()
         corpus.generate_prototype_likelihood(model)
+    
     corpus.accuracy_corpus()
 
     if opt.resume_segmentation:
@@ -44,9 +53,19 @@ def temp_embed(opt):
     else:
         corpus.viterbi_decoding()
 
+   
     # Apply transcript reordering after Viterbi decoding
     if opt.apply_permutation_aware_prior:
-        corpus.apply_transcript_reordering()
+        corpus.apply_transcript_reordering(model) # Also reclusters if True
+
+        # Recompute the likelihoods after transcript reordering
+        if opt.recluster_after_reordering:
+            if opt.learn_prototype:
+                corpus.generate_prototype_likelihood(model)
+            else:
+                corpus.gaussian_model()
+
+            corpus.viterbi_decoding()
 
     corpus.accuracy_corpus('final')
 
@@ -70,6 +89,7 @@ def all_actions(actions, opt):
         
         print("WRITTING OUTPUT FILES (FINAL_RESULTS)")
         print(opt.description)
+
         out_file = open(os.path.join(opt.dataset_root, opt.tensorboard_dir, "final_results_{}.txt".format(action)), "w")
         out_file_2 = open(os.path.join(opt.dataset_root, opt.tensorboard_dir, "final_results_{}_combined.txt".format(action)), "w")
         parse_return_stat(return_stat_single, out_file)    
@@ -81,10 +101,11 @@ def all_actions(actions, opt):
     logger.debug(return_stat_all)
     out_file = open(os.path.join(opt.dataset_root, opt.tensorboard_dir, "final_results.txt"), "w")
     #out_file = open(os.path.join(opt.dataset_root, "test_runs", "final_results.txt"), "w")
+    
     parse_return_stat(return_stat_all, out_file)
 
 
-def resume_segmentation(iterations=10):
+def resume_segmentation(iterations=10, opt=any):
     logger.debug('Resume segmentation')
     corpus = Corpus(subaction=opt.action)
 

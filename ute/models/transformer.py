@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-"""Baseline for relative time embedding: learn regression model in terms of
+"""Transformer for relative time embedding: learn regression model in terms of
 relative time.
 """
 
@@ -9,6 +9,9 @@ import torch.nn as nn
 from torch.nn import functional as F
 import math
 from ute.utils.logging_setup import logger
+
+__author__ = 'Adriana Díaz Soley'
+__date__ = 'May 2024'
 
 
 class TCN(nn.Module):
@@ -138,7 +141,6 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0), :]
         return self.dropout(x)
 
-# NUEVO!
 class TransformerEncoder(nn.Module):
     def __init__(self, opt, num_clusters, dim_feedforward=2048):
         super(TransformerEncoder, self).__init__()
@@ -215,14 +217,6 @@ class TransformerEncoder(nn.Module):
 
     def get_prototypes(self):
         return self.prototype_layer.weight.data.clone()
-
-    """# AÑADIDO - use Xavier initialization
-    def _init_weights(self):
-      for m in self.modules():
-          if isinstance(m, nn.Linear):
-              nn.init.xavier_uniform_(m.weight)
-              if m.bias is not None:
-                  nn.init.constant_(m.bias, 0)"""
     
     # He initialization (also known as Kaiming initialization)
     def _init_weights(self):
@@ -237,6 +231,10 @@ class TransformerEncoder(nn.Module):
             if param.requires_grad:
                 print(f"{name}: {param.data}")
 
+    def update_prototypes(self, new_prototypes):
+      with torch.no_grad():
+        self.prototype_layer.weight.copy_(torch.tensor(new_prototypes).to(self.prototype_layer.weight.device))
+     
 ##############################################################
 
 
@@ -247,7 +245,6 @@ def create_model(opt, num_clusters, learn_prototype = True):
     print("Creating Transformer")
 
     model = TransformerEncoder(num_clusters = num_clusters, opt = opt).to(opt.device)
-    model.print_initial_weights()
     
     loss = nn.MSELoss(reduction='sum')
     tcn_loss = TCN(int((opt.batch_size/opt.num_videos)/opt.num_splits))

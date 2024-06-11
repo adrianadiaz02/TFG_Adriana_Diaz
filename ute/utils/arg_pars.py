@@ -7,8 +7,8 @@ logger: unified logger for the project
 """
 
 __all__ = ['opt']
-__author__ = 'Anna Kukleva'
-__date__ = 'August 2018'
+__author__ = 'Anna Kukleva (base code), Adriana Díaz Soley (modifications)'
+__date__ = 'August 2018, modified in May 2024'
 
 import argparse
 from os.path import join
@@ -84,7 +84,7 @@ parser.add_argument('--num_workers', default=4,
                     help='number of threads for dataloading')
 parser.add_argument('--embed_dim', default=40, type=int,
                     help='number of dimensions in embedded space') # * antes era default 20, pero igualmente al final quedaba 40
-parser.add_argument('--epochs', default=4000, type=int,
+parser.add_argument('--epochs', default=1000, type=int,
                     help='number of epochs for training embedding') # 4000
 
 
@@ -95,7 +95,7 @@ parser.add_argument('--temperature', default=0.1, type=float, help="temperature 
 parser.add_argument('--freeze_iters', default=4000, type=int, help="iterations to freeze prototypes")
 parser.add_argument('--num_videos', default=1, type=int, help="Number of videos in a batch") 
      # Number of videos per MINI batch !!! (antes: 2)
-parser.add_argument('--sigma', default=1, type=float, help="Number of videos in a batch") # PROBAR CON 1
+parser.add_argument('--sigma', default=1, type=float, help="Number of videos in a batch")
 parser.add_argument('--window_size', default=30, type=int, help="Window size for TCN")
 parser.add_argument('--freeze_proto_loss', default=0, type=int, help="Window size for TCN")
 parser.add_argument("--tcn_loss", default=True, type=bool, help="Train for TCN LOSS")
@@ -178,10 +178,9 @@ parser.add_argument('--log', default='DEBUG',
 parser.add_argument('--log_str', default='',
                     help='unify all savings')
 
-parser.add_argument('--tensorboard_dir', default = "./runs", help = "directory to log train details")
-parser.add_argument('--description', default = "bf_debug_cereals_prior_baseline", help = "Description of model")
-#parser.add_argument('--description', default = "bf_debug_milk_TRANSFORMER_prueba3.8", help = "Description of model")
-
+parser.add_argument('--tensorboard_dir', default = "./runs", help = "directory to log train details")#parser.add_argument('--description', default = "bf_debug_cereals_recluster4", help = "Description of model")
+parser.add_argument('--description', default = "bf_debug_pancake_retrain2_bueno", help = "Description of model")
+#parser.add_argument('--description', default = "bf_debug_sandwich_baseline_WITHstop2", help = "Description of model")
 
 
 #################### TRANSFORMER #####################
@@ -190,11 +189,20 @@ parser.add_argument('--transformer_num_heads', default = 5, help = "Number of he
 parser.add_argument('--transformer_num_layers', default = 2, help = "Number of layers in the transformer encoder")
 parser.add_argument('--transformer_dropout', default = 0.3, help = "Dropout to be used in the transformer encoder")
 
-##### PERMUTATION AWARE PRIOR ###
+
+#################### PERMUTATION AWARE PRIOR ##########
 parser.add_argument('--apply_permutation_aware_prior', default = False, help = "")
 parser.add_argument('--transcripts_path', default = 'estimated_transcripts_coffee.json', help='Path to the transcripts JSON file')
+parser.add_argument('--estimate_transcript_method', default = "basic", help='Either estimate transcript with "basic" or "improved", which allows an action to be assigned twice')
+parser.add_argument('--recluster_after_reordering', default = False, help='After reordering segments based on the transcript,recluster with the new centroids')
+parser.add_argument('--do_2nd_train', default = False, help='')
 
-parser.add_argument('--early_stopping', default = False, help='Do early stopping')
+
+#################### EARLY STOPPING ###################
+parser.add_argument('--early_stopping', default = True, help='Do early stopping')
+parser.add_argument('--early_stop_min_epochs', default = 50, help='Minimum number of epochs to be performed before considering doing early stopping')
+parser.add_argument('--early_stop_delta', default = 0.1, help='Delta when doing early stopping')
+parser.add_argument('--early_stop_patience', default = 10, help='Patience when doing early stopping')
 
 
 

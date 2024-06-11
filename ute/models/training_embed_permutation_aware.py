@@ -2,7 +2,7 @@
 
 """Implementation of training and testing functions for embedding."""
 
-__all__ = ['training', 'load_model']
+__all__ = ['training']
 __author__ = 'Anna Kukleva (base code), Adriana Díaz Soley (modifications)'
 __date__ = 'August 2018, modified in May 2024'
 
@@ -27,9 +27,10 @@ from scipy.signal import find_peaks
 import os
 from codecarbon import EmissionsTracker
 
-#############ADDED ######################
+
+############# AÑADIDO ######################
 class EarlyStopping:
-    """Early stop the training if the loss doesn't improve or changes minimally after a given patience."""
+    """Early stops the training if the loss doesn't improve or changes minimally after a given patience."""
     def __init__(self, patience=5, verbose=False, delta=0.001):
         """
         Args:
@@ -62,51 +63,20 @@ class EarlyStopping:
                 self.early_stop = True
                 return True
         return False
-    
-def save_transcripts(opt, estimated_transcripts_all, corpus):
-    """Save the transcript in a json file in the defined tensorboard directory."""
 
-    tensorboard_dir = '/home/usuaris/imatge/adriana.diaz/TOT-CVPR22-main/runs'
-    filename = f'estimated_transcripts_{opt.subaction}.json'
-    path = os.path.join(tensorboard_dir, opt.description, filename)
-    
-    try:
-        # Save the estimated transcripts for each video
-        print("GUARDANDO TRANSCRIPT")
-        with open(path, 'w') as file:
-            json.dump(estimated_transcripts_all, file)
-        logger.info(f"Successfully saved estimated transcripts to {path}.")
-        print(f"Successfully saved estimated transcripts to {path}.")
-    
-    except IOError as e:
-        logger.error(f"Failed to save estimated transcripts: {str(e)}")
-    
-    corpus.update_transcripts(estimated_transcripts_all)
-
-
-def prepare_transcripts(opt, estimated_transcripts, estimated_transcripts_all, video_ids):
-    """ Prepares the transcript to be saved by assigning the video identefier to its 
-    corresponding name. """
-    # Get the dictionary that maps video_ids to their names
+# Load video ID to descriptive name mapping
+def load_video_name_mapping(opt):
     mapping_path = os.path.join("video_id_mappings", f'video_id_mapping_{opt.subaction}.json')
-
     with open(mapping_path, 'r') as file:
         video_name_mapping = json.load(file)
+    return video_name_mapping
+   
+#####################################
 
-    for video_id in video_ids:
-        if video_id in video_name_mapping:
-            # instead of saving with the video_id, save it with its corresponding name
-            descriptive_name = video_name_mapping[video_id]  # Get the corresponding descriptive name
-            estimated_transcripts_all[descriptive_name] = estimated_transcripts
-        else:
-            logger.error(f"Video ID {video_id} not found in video_name_mapping")
-    return estimated_transcripts_all
-
-#############################################################
-
-
-def training(train_loader, epochs, save, corpus, **kwargs):
+def training_permutation_aware(train_loader, epochs, save, corpus, transcripts, **kwargs):
     """Training pipeline for embedding.
+    Different from the other embedding training, this uses the transcript estimated from the previous training
+    to improve the embeddings.
 
     Args:
         train_loader: iterator within dataset
@@ -129,8 +99,6 @@ def training(train_loader, epochs, save, corpus, **kwargs):
     opt = kwargs['opt']
 
     if opt.early_stopping:
-        print("patience: ", opt.early_stop_patience)
-        print("delta: ", opt.early_stop_delta)
         early_stopper = EarlyStopping(patience=opt.early_stop_patience, verbose=True, delta=opt.early_stop_delta)
         early_stopped = False
     
@@ -152,29 +120,25 @@ def training(train_loader, epochs, save, corpus, **kwargs):
 
     adjustable_lr = opt.lr
 
-    #################### ADDED ########################
-    # Files that track the 3 training losses (cluster, tcn, and final losses)
-    TCN_losses_path = join(opt.tensorboard_dir, 'TCN_Losses.txt')
-    cluster_losses_path = join(opt.tensorboard_dir, 'Cluster_Losses.txt')
-    final_losses_path = join(opt.tensorboard_dir, 'Final_Losses.txt')
-    ###################################################
+    #################### ADDED ######################
+    # Load video ID to descriptive name mapping
+    video_name_mapping = load_video_name_mapping(opt)
 
+    # File for the losse
+    final_losses_path = join(opt.tensorboard_dir, 'Final_Losses_Second_Train.txt')
+    ###################################################
 
     logger.debug('epochs: %s', epochs)
     f = open("test_q_distribution.npy", "wb")
 
-    #################### ADDED ########################
+    #############
     torch.autograd.set_detect_anomaly(True)
 
-    if opt.apply_permutation_aware_prior:
-        estimated_transcripts_all = {}
-
-    
     # Start emissions tracking
     tensorboard_dir = '/home/usuaris/imatge/adriana.diaz/TOT-CVPR22-main/runs'
     path = os.path.join(tensorboard_dir, opt.description)
 
-    tracker = EmissionsTracker(output_dir=path, project_name="regression_training")
+    tracker = EmissionsTracker(output_dir=path, project_name="second_regression_training")
     tracker.start()
 
     #########################################
@@ -190,12 +154,22 @@ def training(train_loader, epochs, save, corpus, **kwargs):
 
         total_loss = 0 # For early stopping
       
-        for i, (features, labels, video_ids, video_names) in enumerate(train_loader): # videos_ids y video_names ADDED
-
-            #print(f"Processing {video_ids}")
-
+        for i, (features, labels, video_ids, video_names) in enumerate(train_loader): # videos_ids y video_names AÑADIDO
+            
             num_videos = features.shape[0] 
-            #print("Number of videos:", num_videos) # >> 2 o 1(Number of videos in a batch)
+            num_frames = features.shape[1]
+
+            # Get the estimated transcript corresponding to the video
+            for video_name in video_names:
+                if video_name in transcripts:
+                    transcript = transcripts[video_name]
+                    
+                    # Normalize transcript labels to start from 0
+                    transcript = [(label - 1, start) for label, start in transcript]
+                    #print(f"Transcript for {video_name}: {transcript}")
+                else:
+                    print(f"No transcript found for {video_name}")
+
             
             if opt.use_transformer:
                 # Add check for NaNs in features
@@ -209,10 +183,7 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                 labels =  labels.transpose(0,1)
 
             if not opt.use_transformer:
-                #print("Features shape: ", features.shape) # >> [2, 128, 64] (SIEMPRE), 2 videos, batch size 256
-                features = torch.reshape(features, (features.shape[0] * features.shape[1], features.shape[2]))
-                #print("Features shape after reshape: ", features.shape) # >> [256, 64] 
-                            
+                features = torch.reshape(features, (features.shape[0] * features.shape[1], features.shape[2]))                            
                 labels = torch.reshape(labels, (labels.shape[0] * labels.shape[1], labels.shape[2]))
             
 
@@ -225,21 +196,26 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                 features = features.cuda(non_blocking=True)
 
             output, proto_scores, embs = model(features)
-            
-            #print("output: ", output.shape) # >> [512, 1]
-            #print("proto scores: ", proto_scores.shape) # >> [512, 7]
-            #print("embs: ", embs.shape) # >> [512, 40]
-
 
             if learn_prototype:
                 with torch.no_grad():
 
-                    #compute q
-                    p_gauss = get_cost_matrix(batch_size = opt.batch_size, num_videos = num_videos, num_videos_dataset = opt.num_videos \
-                    ,sigma = opt.sigma, num_clusters = proto_scores.shape[1]) # Prior distribution, maintains fixed order of actions
+                    # Compute the corresponding Permutation-aware prior distribution (Mt)
+                    num_actions = len(transcript)
+
+                    # Get the reference fixed-order prior
+                    p_gauss_path = join(tensorboard_dir, opt.description, 'p_gauss_Ma.npy')
+                    p_gauss = np.load(p_gauss_path)
+        
+                    # Compute the permutation-aware prior M_t
+                    num_clusters = proto_scores.shape[1]
+                    M_t = compute_permutation_aware_prior(transcript, num_clusters, num_frames, opt.sigma)
+
+                    # Normalize the permutation-aware prior to match the reference prior
+                    M_t = normalize_prior(M_t, p_gauss)
 
                     if opt.apply_temporal_ot:
-                        q = generate_optimal_transport_labels(proto_scores, opt.epsilon, p_gauss, opt)
+                        q = generate_optimal_transport_labels(proto_scores, opt.epsilon, M_t, opt)
                         # q type: torch.Tensor, size: ([num_frames, num_actions])
 
                     else:
@@ -258,11 +234,8 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                         writer.add_image("Prototype Dists", img_dists, i + (epoch * len(train_loader)))
                         #np.save(f, q.clone().detach().cpu().numpy())
             
-                if opt.use_transformer:
-                    proto_probs = F.softmax(proto_scores / opt.temperature, dim=1)
                 
-                else:
-                    proto_probs = F.softmax(proto_scores/opt.temperature) 
+                proto_probs = F.softmax(proto_scores/opt.temperature, dim=1) 
         
                  
                 if i + (epoch * len(train_loader)) % 500 == 0:
@@ -273,14 +246,34 @@ def training(train_loader, epochs, save, corpus, **kwargs):
             
                 proto_probs = torch.clamp(proto_probs, min= 1e-30, max=1)
 
-                ################ ADDED #################
-                if opt.use_transformer:
+                ################ AÑADIDO #################
+                if torch.isfinite(proto_probs).all() and torch.isfinite(q).all():
                     proto_loss = torch.mean(torch.sum(q * torch.log(proto_probs + 1e-8), dim=1))
-
                 else:
-                ##########################################
-                    proto_loss = torch.mean(torch.sum(q * torch.log(proto_probs), dim = 1))
-            
+                    if not torch.isfinite(proto_probs).all():
+                        raise ValueError("NaN detected in proto_probs")
+                    if not torch.isfinite(q).all():
+                        raise ValueError("NaN detected in q")
+
+            ############### ADDED #########################
+            # save the last Qs computed
+            """if epoch == epochs - 1:
+                # Get the video name for this batch
+                batch_video_name = video_names[0]  # Assuming all videos in the batch have the same name
+
+                # Save Q matrix for this video
+                q_values = q.clone().detach().cpu().numpy()
+                file_name = f'Q_{batch_video_name}.npy'
+                np.save(join("additional_outputs", 'Q_values2', file_name), q_values)
+                print("Q values from the last epoch saved.")
+
+                # Save the prior distribution matrix for this video
+                file_name = f'Mt_{batch_video_name}.npy'
+                np.save(join("additional_outputs", 'Mt_values2', file_name), M_t)
+                print("Mt values from the last epoch saved.")"""
+
+            ################################################
+             
             loss_tcn =  tcn_loss(embs)
             loss_values = 0 
 
@@ -301,17 +294,13 @@ def training(train_loader, epochs, save, corpus, **kwargs):
 
             optimizer.zero_grad()
 
-            if not opt.use_transformer:
-                loss_values.backward() # Optimize with respect to the loss_values
-            
+            if torch.isfinite(loss_values).all():
+                loss_values.backward() # OPTIMIZA A PARTIR DE LOSS_VALUES
+        
             else:
-                if torch.isfinite(loss_values).all():
-                    loss_values.backward() 
-            
-                else:
-                    print("Loss is NaN or Inf")
-                    optimizer.zero_grad() 
-                    continue  # Skip this update to avoid corrupting model weights
+                print("Loss is NaN or Inf")
+                optimizer.zero_grad() 
+                continue  # Skip this update to avoid corrupting model weights
 
 
             if i + (epoch * len(train_loader)) < opt.freeze_iters:
@@ -321,23 +310,19 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                     if "prototype" in name:
                         p.grad = None 
             
-            ############# ADDED  ##############
-            if opt.use_transformer:
-                #  clip gradients to prevent exploding gradients which can cause NaN values:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            ############# AÑADIDO  ##############
+            #  clip gradients to prevent exploding gradients which can cause NaN values:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-                if any(not torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None):
-                    print("NaN or Inf found in gradients, skipping optimizer step")
-                    optimizer.zero_grad()
-                    continue  # Skip this update
-                else:
-                    optimizer.step()
-                    total_loss += loss_values.item() # For early stopping
-            ###################################################
-
+            if any(not torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None):
+                print("NaN or Inf found in gradients, skipping optimizer step")
+                optimizer.zero_grad()
+                continue  # Skip this update
             else:
                 optimizer.step()
                 total_loss += loss_values.item() # For early stopping
+            ###################################################
+
 
             batch_time.update(time.time() - end)
             end = time.time()
@@ -348,8 +333,6 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                 writer.add_scalar("Loss/tcn_loss", loss_tcn, i + (epoch * len(train_loader)))
 
             if i % 20 == 0 and i:
-                
-                
                 if not learn_prototype:
                     #print("HERE")
                 
@@ -370,25 +353,6 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                         epoch, i, len(train_loader), batch_time=batch_time,
                         data_time=data_time, loss=losses, c_loss = c_losses, tcn_loss = tcn_losses))
 
-            #################### ADDED #################################
-            if learn_prototype and opt.apply_permutation_aware_prior:
-                # Prepare and save estimated transcripts for the current batch
-                num_frames = features.shape[0]
-                num_actions = proto_scores.shape[1]
-
-                # Estimate transcripts from the frame-level pseudo-label codes Qf
-                if opt.estimate_transcript_method == "basic":
-                    estimated_transcripts = estimate_transcripts_basic(q, num_actions)
-                
-                elif opt.estimate_transcript_method == "improved":
-                    peaks_distance = num_frames*0.6
-                    estimated_transcripts = estimate_transcripts(q, num_actions, peaks_distance, 0.5)
-                
-                #print(estimated_transcripts)
-
-                estimated_transcripts_all = prepare_transcripts(opt, estimated_transcripts, estimated_transcripts_all, video_ids)
-
-            ###############################################################
 
         # Print weights after the first epoch
         if epoch == 0:
@@ -397,6 +361,10 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                 print(f"{name}: {param.data}")
         
         average_loss = total_loss / len(train_loader)
+        if average_loss != losses.avg:
+            print("average_loss: ", average_loss)
+            print("losses.avg: ", losses.avg)
+        #average_loss = losses.avg
 
         ############## ADDED ######################
         # Early stopping check (only after some epochs)
@@ -407,16 +375,11 @@ def training(train_loader, epochs, save, corpus, **kwargs):
                 break
         ##############################################
 
-        ################# ADDED #############
+        ################# AÑADIDO #############
         # After each epoch append the epoch number and the average losses (average loss across batches in the current epoch)
         with open(final_losses_path, 'a') as file:
-            file.write(f'Epoch {epoch + 1}: {losses.avg:.4f}\n') # Task losses
+            file.write(f'Epoch {epoch + 1}: {losses.avg:.4f}\n') 
 
-        with open(cluster_losses_path, 'a') as file:
-            file.write(f'Epoch {epoch + 1}: {c_losses.avg:.4f}\n')
-
-        with open(TCN_losses_path, 'a') as file:
-            file.write(f'Epoch {epoch + 1}: {tcn_losses.avg:.4f}\n')
         ############################
 
         logger.debug('loss: %f' % losses.avg)
@@ -426,30 +389,17 @@ def training(train_loader, epochs, save, corpus, **kwargs):
     
     f.close()
 
-    ####### ADDED #################
-    # Save the estimated transcripts after training or early stopping
-    if learn_prototype and opt.apply_permutation_aware_prior:
-        save_transcripts(opt, estimated_transcripts_all, corpus)
 
-    # Save the last Q computed
-    """q_values = q.clone().detach().cpu().numpy()
-    if q_values is not None:
-        filename = 'q_values_last_video_last_epoch_' + opt.description + '.npy'
-        np.save(join("additional_outputs", filename), q_values)
-        print("q values from the last epoch saved.")"""
-    
-    # Save last fixed-order prior distribution
-    tensorboard_dir = '/home/usuaris/imatge/adriana.diaz/TOT-CVPR22-main/runs'
-    filename = 'p_gauss_Ma.npy'
-    path = os.path.join(tensorboard_dir, opt.description, filename)
-    np.save(path, p_gauss)
-    
-    #filename = 'p_gauss_Ma_' + opt.description + '.npy'
-    #np.save(join("additional_outputs", filename), p_gauss)
-    #################################
+    # Save last prior distribution
+    #filename = 'Mt2_' + opt.description + '.npy'
+    #np.save(join("additional_outputs", filename), M_t)
 
-    opt.resume_str = join(opt.tensorboard_dir, 'models',
-                          '%s.pth.tar' % opt.log_str)
+
+    """opt.resume_str = join(opt.tensorboard_dir, 'models',
+                          '%s.pth.tar' % opt.log_str)"""
+    
+    opt.resume_str = join(opt.tensorboard_dir, 'models', 'model_second_phase.pth.tar')
+
     if save:
         save_dict = {'epoch': epoch,
                      'state_dict': model.state_dict(),
@@ -463,8 +413,10 @@ def training(train_loader, epochs, save, corpus, **kwargs):
             save_params(opt, join(opt.tensorboard_dir))
         torch.save(save_dict, opt.resume_str)
 
-    tracker.stop() 
+    tracker.stop()
+
     return model
+
 
 def distributed_sinkhorn(Q, nmb_iters):
     with torch.no_grad():
@@ -487,28 +439,6 @@ def distributed_sinkhorn(Q, nmb_iters):
             # dist.all_reduce(curr_sum)
         return (Q / torch.sum(Q, dim=0, keepdim=True)).t().float()
 
-def load_model(opt):
-    if opt.loaded_model_name:
-        if opt.global_pipe:
-            resume_str = opt.loaded_model_name
-        else:
-            resume_str = opt.loaded_model_name #% opt.subaction
-        # resume_str = opt.resume_str
-    else:
-        resume_str = opt.log_str + '.pth.tar'
-    # opt.loaded_model_name = resume_str
-    if opt.device == 'cpu':
-        checkpoint = torch.load(join(opt.dataset_root, 'models',
-                                     '%s' % resume_str),
-                                map_location='cpu')
-    else:
-        checkpoint = torch.load(join(opt.tensorboard_dir, 'models',
-                                 '%s' % resume_str))
-    checkpoint = checkpoint['state_dict']
-    logger.debug('loaded model: ' + '%s' % resume_str)
-    return checkpoint
-
-
 def get_cost_matrix(batch_size, num_videos, num_videos_dataset, num_clusters, sigma):
 
     cost_matrix = generate_matrix(int(batch_size/num_videos_dataset), num_clusters)
@@ -524,10 +454,12 @@ def cost(i, j, n, m):
 
 
 def cost_paper(i, j, n, m):
+    
     return ((abs(i/n - j/m))/(np.sqrt((1/n**2) + (1/m**2))))**2
 
 
 def gaussian(cost, sigma):
+
     #print("Value of sigma: {}".format(opt.sigma))
     return (1/(sigma * 2*3.142))*(np.exp(-cost/(2*(sigma**2))))
 
@@ -575,17 +507,13 @@ def plot_to_image(figure):
   return image.transpose(2, 0, 1)
 
 
-def generate_optimal_transport_labels(proto_scores, epsilon, p_gauss, opt):
-    if opt.use_transformer:
-        max_proto_scores = torch.max(proto_scores, dim=1, keepdim=True)[0]
-        q = (proto_scores - max_proto_scores) / epsilon
-
-    else:
-        q = proto_scores/epsilon
+def generate_optimal_transport_labels(proto_scores, epsilon, prior, opt):
+    max_proto_scores = torch.max(proto_scores, dim=1, keepdim=True)[0]
+    q = (proto_scores - max_proto_scores) / epsilon
     
     q =  torch.exp(q)
-    if p_gauss is not None:
-        q = q * torch.from_numpy(p_gauss).cuda()
+    if prior is not None:
+        q = q * torch.from_numpy(prior).cuda()
     q = q.t()
     q =  distributed_sinkhorn(q, 3)
 
@@ -593,82 +521,32 @@ def generate_optimal_transport_labels(proto_scores, epsilon, p_gauss, opt):
 
 
 ########### ADDED ###########################################
-
-def estimate_transcripts_basic(q, num_actions):
-    """ Takes the TENSOR q and returns a sorted list of actions by frame index """
-    # For each j-th action, find the i-th frame where Q_{f}^{ij} has the maximum assignment probability 
-    # (along the j-th column), which results in an action-frame pair (j,i).
-
-    # Find the frame index with the highest probability for each action
-    frame_indices = torch.argmax(q, dim=0)  # Finding max along rows, results in [num_actions]
+def compute_permutation_aware_prior(transcript, num_clusters, num_frames, sigma):
+    """Compute the permutation-aware prior for the current batch using the estimated transcripts."""
+    cost_matrix = np.zeros((num_frames, num_clusters))
     
-    # Create action-frame pairs
-    action_frame_pairs = [(i + 1, int(frame_indices[i])) for i in range(num_actions)]
-    
-    # Sort all action-frame pairs by their frame indexes
-    action_frame_pairs.sort(key=lambda x: x[1])  # Sort by frame index
+    # Calculate midpoints of the action segments
+    action_positions = {}
+    for idx, (action, start_frame) in enumerate(transcript):
+        if idx < len(transcript) - 1:
+            next_start_frame = transcript[idx + 1][1]
+        else:
+            next_start_frame = num_frames  # Assume the last action goes until the end of the frames
+        
+        mid_point = (start_frame + next_start_frame) // 2
+        action_positions[action] = mid_point
 
-    # The resulting temporally sorted list of actions is our estimates transcript T
-    return action_frame_pairs
+    for j in range(num_clusters):
+        if j + 1 in action_positions:
+            frame_position = action_positions[j + 1]
+            for i in range(num_frames):
+                cost_matrix[i, j] = cost_paper(i, frame_position, num_frames, num_clusters)
 
-
-def estimate_transcripts(q, num_actions, min_separation=50, max_relative_difference=0.7):
-    """
-    Estimate transcripts allowing actions to appear multiple times based on significant probability peaks.
-
-    Args:
-    q: Tensor of shape (num_frames, num_actions), representing the probability that a frame is assigned to a certain action
-    num_actions: Number of actions.
-    min_separation: Minimum separation between peaks for the same action.
-    max_relative_difference: Maximum relative difference for considering secondary peaks compared to the primary peak.
-
-    Returns:
-    Transcript: list of (action, frame) pairs representing the estimated transcript.
-    """
-    q = q.cpu()
-
-    action_frame_pairs = []
-
-    for action_index in range(num_actions):
-        probabilities = q[:, action_index].numpy()
-
-        # Find primary peak (highest probability frame)
-        primary_peak_index = np.argmax(probabilities)
-        primary_peak_value = probabilities[primary_peak_index]
-
-        action_frame_pairs.append((int(action_index + 1), int(primary_peak_index), primary_peak_value))
-        #print(f"Action {action_index + 1}: Primary peak at frame {primary_peak_index} with value {primary_peak_value}")
-
-        # Find the second highest peak
-        secondary_peak_index = -1
-        secondary_peak_value = -1
-        for i, value in enumerate(probabilities):
-            if i != primary_peak_index and value > secondary_peak_value:
-                secondary_peak_index = i
-                secondary_peak_value = value
-
-        # Check the conditions for considering the secondary peak
-        if secondary_peak_index != -1:
-            distance = abs(primary_peak_index - secondary_peak_index)
-            relative_difference = secondary_peak_value / primary_peak_value
-            #print(f"Action {action_index + 1}: Secondary peak at frame {secondary_peak_index} with value {secondary_peak_value}, distance {distance}, relative difference {relative_difference}")
-
-            if distance >= min_separation and relative_difference >= max_relative_difference:
-                action_frame_pairs.append((int(action_index + 1), int(secondary_peak_index), secondary_peak_value))
-                #print(f"Action {action_index + 1}: Secondary peak added at frame {secondary_peak_index}")
+    p_permutation_aware = gaussian(cost_matrix, sigma)
+    return p_permutation_aware
 
 
-    # Sort by probability value in descending order (to keep the top ones)
-    action_frame_pairs.sort(key=lambda x: x[2], reverse=True)
-
-    print("action_frame inicial: ", action_frame_pairs)
-
-    # Keep only the top num_actions pairs
-    action_frame_pairs = action_frame_pairs[:num_actions]
-
-    # Sort by frame index to maintain temporal order
-    action_frame_pairs.sort(key=lambda x: x[1])
-
-    # Return only the action and frame pairs
-    return [(action, frame) for action, frame, _ in action_frame_pairs]
-
+def normalize_prior(prior, reference_prior):
+    M_t = prior * (reference_prior.sum() / prior.sum())
+    M_t += 0.0001 # Add a small constant value
+    return M_t 

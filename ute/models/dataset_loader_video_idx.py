@@ -4,8 +4,8 @@
 """
 
 __all__ = ''
-__author__ = 'Anna Kukleva'
-__date__ = 'December 2018'
+__author__ = 'Anna Kukleva (base code), Adriana Díaz Soley (modifications)'
+__date__ = 'December 2018, modified in May 2024'
 
 
 from torch.utils.data import Dataset
@@ -17,6 +17,7 @@ from ute.utils.util_functions import join_data
 import math
 
 import json
+import os
 
 class FeatureDataset(Dataset):
     def __init__(self, videos, features, video_ids, video_names):
@@ -265,7 +266,8 @@ def load_reltime_video_idx(videos, features, opt, mode="train", shuffle=True):
     video_id_to_name = {video_id: video_name for video_id, video_name in zip(video_ids, video_names)}
 
     # Save the dictionary as a JSON file
-    mapping_file_path =  f'video_id_mapping_{opt.subaction}.json'
+    mapping_file =  f'video_id_mapping_{opt.subaction}.json'
+    mapping_file_path = os.path.join("video_id_mappings", mapping_file)
     with open(mapping_file_path, 'w') as mapping_file:
         json.dump(video_id_to_name, mapping_file)
     print(f"Video ID to name mapping saved to {mapping_file_path}")
