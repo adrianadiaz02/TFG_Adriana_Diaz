@@ -307,7 +307,7 @@ class Corpus(object):
             self._embedding = model
         
         else:
-            self._embedding = training_permutation_aware(dataloader, self.opt.epochs,
+            self._embedding = training_permutation_aware(dataloader, self.opt.epochs_second,
                                                          save=self.opt.save_model,
                                                          model=model,
                                                          loss=loss,
@@ -745,7 +745,8 @@ class Corpus(object):
             print(f"Initial labels after reordering: {np.unique(initial_labels)}")
 
             # Perform clustering again with the embeddings and initial labels
-            self.recompute_centroids_and_reassign(embeddings, initial_labels, model)
+            #self.recompute_centroids_and_reassign(embeddings, initial_labels, model)
+            self.recompute_centroids_and_cluster(embeddings, initial_labels, model)
             print("Reclustering with updated centroids done.")
 
     

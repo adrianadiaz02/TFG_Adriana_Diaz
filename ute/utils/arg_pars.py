@@ -84,9 +84,11 @@ parser.add_argument('--num_workers', default=4,
                     help='number of threads for dataloading')
 parser.add_argument('--embed_dim', default=40, type=int,
                     help='number of dimensions in embedded space') # * antes era default 20, pero igualmente al final quedaba 40
-parser.add_argument('--epochs', default=1000, type=int,
-                    help='number of epochs for training embedding') # 4000
 
+parser.add_argument('--epochs', default=1200, type=int,
+                    help='number of epochs for training embedding') # 4000
+parser.add_argument('--epochs_second', default=1200, type=int,
+                    help='number of epochs for training embedding') 
 
 #hyperparams for clustering
 parser.add_argument('--learn_prototype', default=True, type=bool)
@@ -179,7 +181,7 @@ parser.add_argument('--log_str', default='',
                     help='unify all savings')
 
 parser.add_argument('--tensorboard_dir', default = "./runs", help = "directory to log train details")#parser.add_argument('--description', default = "bf_debug_cereals_recluster4", help = "Description of model")
-parser.add_argument('--description', default = "bf_debug_pancake_retrain2_bueno", help = "Description of model")
+parser.add_argument('--description', default = "bf_debug_coffee", help = "Description of model")
 #parser.add_argument('--description', default = "bf_debug_sandwich_baseline_WITHstop2", help = "Description of model")
 
 

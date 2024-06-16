@@ -74,7 +74,7 @@ if __name__ == '__main__':
     # run temporal embedding
     if opt.subaction == 'all':
         #actions = ['coffee', 'cereals', 'tea', 'milk', 'juice', 'sandwich', 'scrambledegg', 'friedegg', 'salat', 'pancake']
-        actions = ['pancake']
+        actions = ['coffee']
         
         if opt.apply_permutation_aware_prior:
             # Create an empty json file to write the future estimated transcript

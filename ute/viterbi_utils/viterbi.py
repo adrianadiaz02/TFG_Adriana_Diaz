@@ -2,7 +2,7 @@ import numpy as np
 from os.path import join
 
 class Viterbi:
-    def __init__(self, grammar, opt, probs, transition=0.5):
+    def __init__(self, grammar, opt, probs, transition=0.4):
         self._grammar = grammar
         self._transition_self = -np.log(transition)
         self._transition_next = -np.log(1 - transition)

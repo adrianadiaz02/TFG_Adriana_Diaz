@@ -172,7 +172,11 @@ def training(train_loader, epochs, save, corpus, **kwargs):
     
     # Start emissions tracking
     tensorboard_dir = '/home/usuaris/imatge/adriana.diaz/TOT-CVPR22-main/runs'
-    path = os.path.join(tensorboard_dir, opt.description)
+    path = os.path.join(tensorboard_dir, opt.description, 'regression_training')
+
+    # Create the directory
+    if not os.path.exists(path):
+        os.makedirs(path)
 
     tracker = EmissionsTracker(output_dir=path, project_name="regression_training")
     tracker.start()

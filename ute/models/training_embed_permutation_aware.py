@@ -136,7 +136,11 @@ def training_permutation_aware(train_loader, epochs, save, corpus, transcripts, 
 
     # Start emissions tracking
     tensorboard_dir = '/home/usuaris/imatge/adriana.diaz/TOT-CVPR22-main/runs'
-    path = os.path.join(tensorboard_dir, opt.description)
+    path = os.path.join(tensorboard_dir, opt.description, 'second_regression_training')
+
+    # Create the directory
+    if not os.path.exists(path):
+        os.makedirs(path)
 
     tracker = EmissionsTracker(output_dir=path, project_name="second_regression_training")
     tracker.start()
